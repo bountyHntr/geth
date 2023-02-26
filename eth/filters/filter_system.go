@@ -161,6 +161,8 @@ const (
 	PendingTransactionsSubscription
 	// BlocksSubscription queries hashes for blocks that are imported
 	BlocksSubscription
+	// FullBlocksSubscription queries for full block that are imported
+	FullBlocksSubscription
 	// LastIndexSubscription keeps track of the last index
 	LastIndexSubscription
 )
@@ -185,6 +187,7 @@ type subscription struct {
 	logs      chan []*types.Log
 	txs       chan []*types.Transaction
 	headers   chan *types.Header
+	blocks    chan *types.Block
 	installed chan struct{} // closed when the filter is installed
 	err       chan error    // closed when the filter is uninstalled
 }
@@ -278,6 +281,7 @@ func (sub *Subscription) Unsubscribe() {
 			case <-sub.f.logs:
 			case <-sub.f.txs:
 			case <-sub.f.headers:
+			case <-sub.f.blocks:
 			}
 		}
 
@@ -345,6 +349,7 @@ func (es *EventSystem) subscribeMinedPendingLogs(crit ethereum.FilterQuery, logs
 		logs:      logs,
 		txs:       make(chan []*types.Transaction),
 		headers:   make(chan *types.Header),
+		blocks:    make(chan *types.Block),
 		installed: make(chan struct{}),
 		err:       make(chan error),
 	}
@@ -362,6 +367,7 @@ func (es *EventSystem) subscribeLogs(crit ethereum.FilterQuery, logs chan []*typ
 		logs:      logs,
 		txs:       make(chan []*types.Transaction),
 		headers:   make(chan *types.Header),
+		blocks:    make(chan *types.Block),
 		installed: make(chan struct{}),
 		err:       make(chan error),
 	}
@@ -379,6 +385,7 @@ func (es *EventSystem) subscribePendingLogs(crit ethereum.FilterQuery, logs chan
 		logs:      logs,
 		txs:       make(chan []*types.Transaction),
 		headers:   make(chan *types.Header),
+		blocks:    make(chan *types.Block),
 		installed: make(chan struct{}),
 		err:       make(chan error),
 	}
@@ -395,6 +402,24 @@ func (es *EventSystem) SubscribeNewHeads(headers chan *types.Header) *Subscripti
 		logs:      make(chan []*types.Log),
 		txs:       make(chan []*types.Transaction),
 		headers:   headers,
+		blocks:    make(chan *types.Block),
+		installed: make(chan struct{}),
+		err:       make(chan error),
+	}
+	return es.subscribe(sub)
+}
+
+// SubscribeNewBlocks creates a subscription that writes the full block that is
+// imported in the chain.
+func (es *EventSystem) SubscribeNewBlocks(blocks chan *types.Block) *Subscription {
+	sub := &subscription{
+		id:        rpc.NewID(),
+		typ:       FullBlocksSubscription,
+		created:   time.Now(),
+		logs:      make(chan []*types.Log),
+		txs:       make(chan []*types.Transaction),
+		headers:   make(chan *types.Header),
+		blocks:    blocks,
 		installed: make(chan struct{}),
 		err:       make(chan error),
 	}
@@ -411,6 +436,7 @@ func (es *EventSystem) SubscribePendingTxs(txs chan []*types.Transaction) *Subsc
 		logs:      make(chan []*types.Log),
 		txs:       txs,
 		headers:   make(chan *types.Header),
+		blocks:    make(chan *types.Block),
 		installed: make(chan struct{}),
 		err:       make(chan error),
 	}
@@ -461,6 +487,9 @@ func (es *EventSystem) handleTxsEvent(filters filterIndex, ev core.NewTxsEvent) 
 func (es *EventSystem) handleChainEvent(filters filterIndex, ev core.ChainEvent) {
 	for _, f := range filters[BlocksSubscription] {
 		f.headers <- ev.Block.Header()
+	}
+	for _, f := range filters[FullBlocksSubscription] {
+		f.blocks <- ev.Block
 	}
 	if es.lightMode && len(filters[LogsSubscription]) > 0 {
 		es.lightFilterNewHead(ev.Block.Header(), func(header *types.Header, remove bool) {

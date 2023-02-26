@@ -408,6 +408,11 @@ func toFilterArg(q ethereum.FilterQuery) (interface{}, error) {
 	return arg, nil
 }
 
+// Exports toFilterArg function
+func ToFilterArg(q ethereum.FilterQuery) (interface{}, error) {
+	return toFilterArg(q)
+}
+
 // Pending State
 
 // PendingBalanceAt returns the wei balance of the given account in the pending state.

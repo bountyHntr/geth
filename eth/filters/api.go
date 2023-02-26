@@ -240,6 +240,41 @@ func (api *FilterAPI) NewHeads(ctx context.Context) (*rpc.Subscription, error) {
 	return rpcSub, nil
 }
 
+// NewBlocks send a notification each time a new block is appended to the chain.
+func (api *FilterAPI) NewBlocks(ctx context.Context) (*rpc.Subscription, error) {
+	notifier, supported := rpc.NotifierFromContext(ctx)
+	if !supported {
+		return &rpc.Subscription{}, rpc.ErrNotificationsUnsupported
+	}
+
+	rpcSub := notifier.CreateSubscription()
+
+	go func() {
+		blocks := make(chan *types.Block)
+		blocksSub := api.events.SubscribeNewBlocks(blocks)
+
+		for {
+			select {
+			case b := <-blocks:
+				data, err := marshalBlock(b)
+				if err != nil {
+					panic(err)
+				}
+
+				notifier.Notify(rpcSub.ID, data)
+			case <-rpcSub.Err():
+				blocksSub.Unsubscribe()
+				return
+			case <-notifier.Closed():
+				blocksSub.Unsubscribe()
+				return
+			}
+		}
+	}()
+
+	return rpcSub, nil
+}
+
 // Logs creates a subscription that fires for all new log that match the given filter criteria.
 func (api *FilterAPI) Logs(ctx context.Context, crit FilterCriteria) (*rpc.Subscription, error) {
 	notifier, supported := rpc.NotifierFromContext(ctx)

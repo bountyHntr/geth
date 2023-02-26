@@ -1,3 +1,10 @@
+## Fork of the official *Geth* node.
+
+The following changes have been made:
+- added subscription to full blocks (without uncle blocks)
+
+***
+
 ## Go Ethereum
 
 Official Golang execution layer implementation of the Ethereum protocol.
