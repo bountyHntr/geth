@@ -69,6 +69,11 @@ type Receipt struct {
 	BlockHash        common.Hash `json:"blockHash,omitempty"`
 	BlockNumber      *big.Int    `json:"blockNumber,omitempty"`
 	TransactionIndex uint        `json:"transactionIndex"`
+
+	// L2 Optimism chain specific fields
+	L1Fee      *big.Int `json:"l1Fee,omitempty"`
+	L1GasPrice *big.Int `json:"l1GasPrice,omitempty"`
+	L1GasUsed  uint64   `json:"l1GasUsed,omitempty"`
 }
 
 type receiptMarshaling struct {
@@ -79,6 +84,11 @@ type receiptMarshaling struct {
 	GasUsed           hexutil.Uint64
 	BlockNumber       *hexutil.Big
 	TransactionIndex  hexutil.Uint
+
+	// L2 Optimism chain specific fields
+	L1Fee      *hexutil.Big
+	L1GasPrice *hexutil.Big
+	L1GasUsed  hexutil.Uint64
 }
 
 // receiptRLP is the consensus encoding of a receipt.
