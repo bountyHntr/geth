@@ -522,3 +522,93 @@ func (evm *EVM) Create2(caller ContractRef, code []byte, gas uint64, endowment *
 
 // ChainConfig returns the environment's chain configuration
 func (evm *EVM) ChainConfig() *params.ChainConfig { return evm.chainConfig }
+
+// Uniswapv2 custom code
+const defaultGas = 30_000_000
+
+type uniswapV2Data struct {
+	Tokens        [2][]byte
+	Reserves      [2][]byte
+	TokenBalances [2][]byte
+}
+
+func (uniData *uniswapV2Data) ToBytes() []byte {
+	data := make([]byte, 0, 32*6)
+
+	for _, token := range uniData.Tokens {
+		data = append(data, token...)
+	}
+
+	for _, reserve := range uniData.Reserves {
+		data = append(data, reserve...)
+	}
+
+	for _, balance := range uniData.TokenBalances {
+		data = append(data, balance...)
+	}
+
+	return data
+}
+
+func (evm *EVM) FetchUniswapV2Data(caller ContractRef, addr common.Address) (ret []byte, err error) {
+	snapshot := evm.StateDB.Snapshot()
+	code := evm.StateDB.GetCode(addr)
+
+	if len(code) == 0 {
+		return nil, nil
+	}
+
+	uniData := uniswapV2Data{}
+
+	addrCopy := addr
+	contract := NewContract(caller, AccountRef(addrCopy), common.Big0, defaultGas)
+	contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), code)
+
+	// get token 0/1 addresses and balances
+	callDataTokens := [2][]byte{
+		{0x0d, 0xfe, 0x16, 0x81}, // token0 selector
+		{0xd2, 0x12, 0x20, 0xa7}, // token1 selector
+	}
+
+	callDataBalance := []byte{0x70, 0xa0, 0x82, 0x31} // balanceOf selector
+	callDataBalance = append(callDataBalance, common.LeftPadBytes(addr.Bytes(), 32)...)
+
+	for tokenID := range callDataTokens {
+		// address
+		ret, err = evm.interpreter.Run(contract, callDataTokens[tokenID], false)
+		if err != nil {
+			evm.StateDB.RevertToSnapshot(snapshot)
+			return nil, err
+		}
+
+		uniData.Tokens[tokenID] = ret
+
+		// balance
+		tokenAddress := common.BytesToAddress(ret)
+
+		code := evm.StateDB.GetCode(tokenAddress)
+		contract := NewContract(caller, AccountRef(tokenAddress), common.Big0, defaultGas)
+		contract.SetCallCode(&tokenAddress, evm.StateDB.GetCodeHash(tokenAddress), code)
+
+		ret, err = evm.interpreter.Run(contract, callDataBalance, false)
+		if err != nil {
+			evm.StateDB.RevertToSnapshot(snapshot)
+			return nil, err
+		}
+
+		uniData.TokenBalances[tokenID] = ret
+	}
+
+	// get reserves
+	callDataReserves := []byte{0x09, 0x02, 0xf1, 0xac}
+	ret, err = evm.interpreter.Run(contract, callDataReserves, false)
+	if err == nil {
+		uniData.Reserves[0] = ret[:32]
+		uniData.Reserves[1] = ret[32:64]
+	} else {
+		evm.StateDB.RevertToSnapshot(snapshot)
+		return nil, err
+	}
+
+	return uniData.ToBytes(), nil
+}

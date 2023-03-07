@@ -409,3 +409,85 @@ func (st *StateTransition) refundGas(refundQuotient uint64) {
 func (st *StateTransition) gasUsed() uint64 {
 	return st.initialGas - st.gas
 }
+
+func DoFetchUniswapV2Data(evm *vm.EVM, msg Message, gp *GasPool) ([]byte, error) {
+	return NewStateTransition(evm, msg, gp).ExecFetchUniswapV2Data()
+}
+
+func (st *StateTransition) ExecFetchUniswapV2Data() ([]byte, error) {
+	if err := st.preCheck(); err != nil {
+		return nil, err
+	}
+
+	var (
+		msg              = st.msg
+		sender           = vm.AccountRef(msg.From())
+		rules            = st.evm.ChainConfig().Rules(st.evm.Context.BlockNumber, st.evm.Context.Random != nil, st.evm.Context.Time)
+		contractCreation = msg.To() == nil
+	)
+
+	// Check clauses 4-5, subtract intrinsic gas if everything is correct
+	gas, err := IntrinsicGas(st.data, st.msg.AccessList(), contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
+	if err != nil {
+		return nil, err
+	}
+	if st.gas < gas {
+		return nil, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.gas, gas)
+	}
+	st.gas -= gas
+
+	// Check clause 6
+	if msg.Value().Sign() > 0 && !st.evm.Context.CanTransfer(st.state, msg.From(), msg.Value()) {
+		return nil, fmt.Errorf("%w: address %v", ErrInsufficientFundsForTransfer, msg.From().Hex())
+	}
+
+	// Check whether the init code size has been exceeded.
+	if rules.IsShanghai && contractCreation && len(st.data) > params.MaxInitCodeSize {
+		return nil, fmt.Errorf("%w: code size %v limit %v", ErrMaxInitCodeSizeExceeded, len(st.data), params.MaxInitCodeSize)
+	}
+
+	// Execute the preparatory steps for state transition which includes:
+	// - prepare accessList(post-berlin)
+	// - reset transient storage(eip 1153)
+	st.state.Prepare(rules, msg.From(), st.evm.Context.Coinbase, msg.To(), vm.ActivePrecompiles(rules), msg.AccessList())
+
+	var (
+		ret   []byte
+		vmerr error // vm errors do not effect consensus and are therefore not assigned to err
+	)
+	if contractCreation {
+		ret, _, st.gas, vmerr = st.evm.Create(sender, st.data, st.gas, st.value)
+	} else {
+		// Increment the nonce for the next transaction
+		st.state.SetNonce(msg.From(), st.state.GetNonce(sender.Address())+1)
+		ret, vmerr = st.evm.FetchUniswapV2Data(sender, st.to())
+	}
+
+	if !rules.IsLondon {
+		// Before EIP-3529: refunds were capped to gasUsed / 2
+		st.refundGas(params.RefundQuotient)
+	} else {
+		// After EIP-3529: refunds are capped to gasUsed / 5
+		st.refundGas(params.RefundQuotientEIP3529)
+	}
+	effectiveTip := st.gasPrice
+	if rules.IsLondon {
+		effectiveTip = cmath.BigMin(st.gasTipCap, new(big.Int).Sub(st.gasFeeCap, st.evm.Context.BaseFee))
+	}
+
+	if st.evm.Config.NoBaseFee && st.gasFeeCap.Sign() == 0 && st.gasTipCap.Sign() == 0 {
+		// Skip fee payment when NoBaseFee is set and the fee fields
+		// are 0. This avoids a negative effectiveTip being applied to
+		// the coinbase when simulating calls.
+	} else {
+		fee := new(big.Int).SetUint64(st.gasUsed())
+		fee.Mul(fee, effectiveTip)
+		st.state.AddBalance(st.evm.Context.Coinbase, fee)
+	}
+
+	if vmerr != nil {
+		return nil, vmerr
+	}
+
+	return ret, nil
+}

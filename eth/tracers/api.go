@@ -1043,3 +1043,83 @@ func overrideConfig(original *params.ChainConfig, override *params.ChainConfig) 
 
 	return copy, canon
 }
+
+func (api *API) FetchUniswapV2Data(ctx context.Context, poolAddress common.Address, blockNrOrHash rpc.BlockNumberOrHash) (interface{}, error) {
+	// Try to retrieve the specified block
+	var (
+		err   error
+		block *types.Block
+	)
+	if hash, ok := blockNrOrHash.Hash(); ok {
+		block, err = api.blockByHash(ctx, hash)
+	} else if number, ok := blockNrOrHash.Number(); ok {
+		if number == rpc.PendingBlockNumber {
+			// We don't have access to the miner here. For tracing 'future' transactions,
+			// it can be done with block- and state-overrides instead, which offers
+			// more flexibility and stability than trying to trace on 'pending', since
+			// the contents of 'pending' is unstable and probably not a true representation
+			// of what the next actual block is likely to contain.
+			return nil, errors.New("tracing on top of pending is not supported")
+		}
+		block, err = api.blockByNumber(ctx, number)
+	} else {
+		return nil, errors.New("invalid arguments; neither block nor hash specified")
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// try to recompute the state
+	reexec := defaultTraceReexec
+	statedb, release, err := api.backend.StateAtBlock(ctx, block, reexec, nil, true, false)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	vmctx := core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), nil)
+
+	var (
+		gas  hexutil.Uint64 = 30_000_000
+		data hexutil.Bytes
+	)
+
+	args := ethapi.TransactionArgs{
+		From: &poolAddress,
+		To:   &poolAddress,
+		Gas:  &gas,
+		Data: &data,
+	}
+
+	msg, err := args.ToMessage(api.backend.RPCGasCap(), block.BaseFee())
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		timeout   = defaultTraceTimeout
+		txContext = core.NewEVMTxContext(msg)
+		txctx     = new(Context)
+	)
+
+	vmenv := vm.NewEVM(vmctx, txContext, statedb, api.backend.ChainConfig(), vm.Config{Debug: false, Tracer: nil, NoBaseFee: true})
+
+	// Define a meaningful timeout of a single transaction trace
+	deadlineCtx, cancel := context.WithTimeout(ctx, timeout)
+	go func() {
+		<-deadlineCtx.Done()
+		if errors.Is(deadlineCtx.Err(), context.DeadlineExceeded) {
+			// Stop evm execution. Note cancellation is not necessarily immediate.
+			vmenv.Cancel()
+		}
+	}()
+	defer cancel()
+
+	// Call Prepare to clear out the statedb access list
+	statedb.SetTxContext(txctx.TxHash, txctx.TxIndex)
+	result, err := core.DoFetchUniswapV2Data(vmenv, msg, new(core.GasPool).AddGas(msg.Gas()))
+	if err != nil {
+		return nil, fmt.Errorf("call failed: %w", err)
+	}
+	return result, nil
+}
