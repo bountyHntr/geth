@@ -3,6 +3,7 @@
 The following changes have been made:
 - added subscription to full blocks (without uncle blocks)
 - added L2 Optimism chain specific fields to transaction receipt (`L1Fee`, `L1GasPrice`, `L1GasUsed`)
+- added custom RPC endpoint to `debug` namespace `FetchUniswapV2Data`
 
 ***
 
